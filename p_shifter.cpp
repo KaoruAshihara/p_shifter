@@ -1,7 +1,7 @@
 /*********************************************************************
 //	p_shifter.cpp
-//	version 1.0.0
-//	14 October, 2021
+//	version 1.0.1
+//	5 November, 2021
 //	Programmed by Kaoru Ashihara
 //	Copyright (c) 2021 AIST
 //
@@ -13,18 +13,26 @@
 #include "math.h"
 #include "p_shifter.h"		// Include the header file of your project
 
-/* Prototyes
-They must be declared in the header file */
+/* Global function prototyes
+The function prototypes listed below must be declared in the header file */
 /***********************************
 void initialize(HWND hWnd);
-void updateparams(HWND hWnd, short sNo, short sAd); 
+void firNoSetter(HWND hWnd, short sNo);
 void genFunc(HWND hWnd, short sTap);
-BOOL fastFt(HWND hwnd, double real[], double image[], short sTap, BOOL isInv);
-static int gcd(HWND hwnd, int x, int y);
 void genFir(HWND hwnd, int iParam, short sTap);
 DWORD convolve(HWND hWnd, LPSTR lpOrigi, LPSTR lpData, LPSTR lpBuf, DWORD dwOffset, DWORD dwUnt, short sCurrPit, short sTap);
 void finalize(HWND hWnd);
 ***********************************/
+
+/* Functions */
+static BOOL fastFt(HWND hwnd, double real[], double image[], short sTap, BOOL isInv);
+static int gcd(HWND hwnd, int x, int y);
+
+/* Constants */
+#define PI 3.14159265359
+#define MAXVALUE 32767
+const double dWpi = PI * 2;
+const float semi = powf(2.0F, 1.0F / 12.0F);
 
 /* Global variables */
 double *winFunc;					// Window function
@@ -39,6 +47,7 @@ short sShiftUp[37] = {};
 short sShiftDown[37] = {};
 BOOL isToRewind = false;
 
+/* Functions */
 /***********************************
 Initializer
 Initialize the parameters
@@ -56,9 +65,8 @@ void initialize(HWND hWnd, int iThr, int iRel, int iMrk, short sNo, short sAd, u
 /**********************************
 Parameter updater
 **********************************/
-void updateparams(HWND hWnd, short sNo, short sAd) {
-	sFirNo = sNo;					
-	sAdv = sAd;						
+void firNoSetter(HWND hWnd, short sNo) {
+	sFirNo = sNo;
 }
 
 /************************************
@@ -180,8 +188,8 @@ FIR filter generator
 	sTap : The number of the FIR taps
 ********************************************************************/
 void genFir(HWND hwnd, int iParam, short sTap) {
-	int i, f, perc, comdiv, iLen, iShift;
-	double dAmp, amp, phase, amount;
+	int i, f, perc, comdiv, iLen, iShift,iCutoff;
+	double dAmp, amp, phase, amount,ratio;
 
 	for (i = 0;i < sNumDown[iParam];i++) {
 		delete[] iDown[iParam][i];
@@ -216,20 +224,24 @@ void genFir(HWND hwnd, int iParam, short sTap) {
 
 		double *re = new double[sTap];
 		double *im = new double[sTap];
-		amount = pow(semi, (double)iParam) - 1.0;
+
+		ratio = pow(semi, (double)iParam);
+		amount = ratio - 1.0;
 		perc = (int)round(amount * 200.0);
 		comdiv = gcd(hwnd, 200, perc);
 		iLen = 200 / comdiv;
 		iShift = perc / comdiv;
+
+		iCutoff = (int)((double)sTap / (2.0 * ratio));
 		iUp[iParam] = new int*[iLen];
 
 		for (i = 0;i < iLen;i++) {
 			iUp[iParam][i] = new int[sTap];
 			for (f = 0;f <= sTap / 2;f++) {
-				if (f % 2 == 0)
-					amp = dAmp;
-				else
+				if (f > iCutoff || f % 2 != 0)
 					amp = 0;
+				else
+					amp = dAmp;
 				phase = (double)f * (double)iShift * dWpi * (double)i / ((double)sTap * (double)iLen);
 				re[f] = amp * cos(phase);
 				im[f] = amp * sin(phase);
@@ -325,7 +337,10 @@ DWORD convolve(HWND hWnd, LPSTR lpOrigi, LPSTR lpData, LPSTR lpBuf, DWORD dwOffs
 				else if (iD < 0)
 					iD += (int)sTap;
 
-				iC = max(0, (int)dwCurr - iTmp);
+				if ((int)dwCurr < iTmp)
+					iC = 0;
+				else
+					iC = (int)dwCurr - iTmp;
 
 				if (c == 0) {
 					if (sCurrPitch < 0)

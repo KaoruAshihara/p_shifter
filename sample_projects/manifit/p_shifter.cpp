@@ -1,7 +1,7 @@
 /*********************************************************************
 //	p_shifter.cpp
-//	version 1.0.0
-//	18 October, 2021
+//	version 1.0.1
+//	5 November, 2021
 //	Programmed by Kaoru Ashihara
 //	Copyright (c) 2021 AIST
 //
@@ -12,7 +12,6 @@
 #include <windowsx.h>
 #include "math.h"
 #include "p_shifter.h"		// Include the header file of your project
-// 'p_shifter.h' in the line above must be the name of the header file of the project 
 
 /* Global function prototyes
 The function prototypes listed below must be declared in the header file */
@@ -72,7 +71,7 @@ void firNoSetter(HWND hWnd, short sNo) {
 
 /************************************
 Generate a window function
-sTap : The number of the FIR taps
+	sTap : The number of the FIR taps
 ************************************/
 void genFunc(HWND hWnd, short sTap) {
 	double dRA = PI / 2.0;
@@ -97,10 +96,10 @@ void genFunc(HWND hWnd, short sTap) {
 
 /***************************************************************
 fast Fourier transform
-real[] : Real part
-image[] : Imaginary part
-sTap : FFT window size
-isInv : BOOL indicates FFT (false) or inverse FFT (true)
+	real[] : Real part
+	image[] : Imaginary part
+	sTap : FFT window size
+	isInv : BOOL indicates FFT (false) or inverse FFT (true)
 ***************************************************************/
 static BOOL fastFt(HWND hwnd, double real[], double image[], short sTap, BOOL isInv) {
 	int n = sTap;
@@ -185,12 +184,12 @@ static int gcd(HWND hwnd, int x, int y) {
 
 /********************************************************************
 FIR filter generator
-iParam : Pitch shift amount in semitone steps
-sTap : The number of the FIR taps
+	iParam : Pitch shift amount in semitone
+	sTap : The number of the FIR taps
 ********************************************************************/
 void genFir(HWND hwnd, int iParam, short sTap) {
-	int i, f,perc, comdiv, iLen, iShift, iCutoff;
-	double dAmp, amp, phase, amount, ratio;
+	int i, f, perc, comdiv, iLen, iShift,iCutoff;
+	double dAmp, amp, phase, amount,ratio;
 
 	for (i = 0;i < sNumDown[iParam];i++) {
 		delete[] iDown[iParam][i];
@@ -299,13 +298,13 @@ void genFir(HWND hwnd, int iParam, short sTap) {
 
 /********************************************************************
 Convolve the filter with the data
-lpOrigi : Original data with which the filter is convolved
-lpData : Data obtained by the processing
-lpBuf : Buffer for the realtime reproduction
-dwOffset : Current position in samples
-dwUnt : Length of a single buffer in samples per channel
-sCurrPitch : Pitch shift amount in semitone
-sTap : The number of the FIR taps
+	lpOrigi : Original data with which the filter is convolved
+	lpData : Data obtained by the processing
+	lpBuf : Buffer for the realtime reproduction
+	dwOffset : Current position in samples
+	dwUnt : Length of a single buffer in samples per channel
+	sCurrPitch : Pitch shift amount in semitone
+	sTap : The number of the FIR taps
 
 This function returns the current position
 (total samples per channel processed)
@@ -338,7 +337,10 @@ DWORD convolve(HWND hWnd, LPSTR lpOrigi, LPSTR lpData, LPSTR lpBuf, DWORD dwOffs
 				else if (iD < 0)
 					iD += (int)sTap;
 
-				iC = max(0, (int)dwCurr - iTmp);
+				if ((int)dwCurr < iTmp)
+					iC = 0;
+				else
+					iC = (int)dwCurr - iTmp;
 
 				if (c == 0) {
 					if (sCurrPitch < 0)
