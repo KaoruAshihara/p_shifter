@@ -1,7 +1,7 @@
 /*********************************************************************
 //	p_shifter.cpp
-//	version 1.0.1
-//	5 November, 2021
+//	version 1.0.4
+//	13 December, 2021
 //	Programmed by Kaoru Ashihara
 //	Copyright (c) 2021 AIST
 //
@@ -10,27 +10,38 @@
 *********************************************************************/
 #include <windows.h>
 #include <windowsx.h>
+#include <stdio.h>
 #include "math.h"
 #include "p_shifter.h"		// Include the header file of your project
 
-/* Global function prototyes
-The function prototypes listed below must be declared in the header file */
+/* Global function prototyes and extern variables
+The function prototypes and extern variables listed below must be declared in the header file */
+
 /***********************************
-void initialize(HWND hWnd);
-void firNoSetter(HWND hWnd, short sNo);
-void genFunc(HWND hWnd, short sTap);
-void genFir(HWND hwnd, int iParam, short sTap);
-DWORD convolve(HWND hWnd, LPSTR lpOrigi, LPSTR lpData, LPSTR lpBuf, DWORD dwOffset, DWORD dwUnt, short sCurrPit, short sTap);
+// prototypes
+void initialize(HWND hWnd, int iLvl, int iRel, int iMrk, unsigned ch, BOOL flg);
+BOOL genFunc(HWND hWnd);
+BOOL prepFir(HWND hwnd,short sPitch);
+BOOL prepFir(HWND hwnd);
+BOOL genFir(HWND hwnd, short sParam);
+DWORD convolve(HWND hWnd, LPSTR lpOrigi, LPSTR lpData, LPSTR lpBuf, DWORD dwOffset, DWORD dwUnt, short sCurrPit);
 void finalize(HWND hWnd);
+
+// global variables
+extern short sNumTaps;
+extern BOOL bFlg;
+extern BOOL isAllowed;
 ***********************************/
 
 /* Functions */
-static BOOL fastFt(HWND hwnd, double real[], double image[], short sTap, BOOL isInv);
+static BOOL fastFt(HWND hwnd, double real[], double image[], BOOL isInv);
 static int gcd(HWND hwnd, int x, int y);
+static BOOL malocfir(HWND hWnd, LPSTR *lpFilter, DWORD dwSize);
 
 /* Constants */
 #define PI 3.14159265359
 #define MAXVALUE 32767
+const int iBytes = 2;
 const double dWpi = PI * 2;
 const float semi = powf(2.0F, 1.0F / 12.0F);
 
@@ -38,52 +49,47 @@ const float semi = powf(2.0F, 1.0F / 12.0F);
 double *winFunc;					// Window function
 unsigned Channels;					// 1 for mono, 2 for stereo
 int iLev, iRelease, iElapsed;
-int ***iUp = new int**[37];			// FIR filter for ascending pitch
-int ***iDown = new int**[37];		// FIR filter for descending pitch
-short sFirNo, sAdv;
-short sNumUp[37] = {};
-short sNumDown[37] = {};
-short sShiftUp[37] = {};
-short sShiftDown[37] = {};
+int iQ, iO, iE;
+short sNumTaps;						// FIR filter tap size
+DWORD dwAdv, dwEnd, dwA, dwPosit;
+DWORD *dwHead = new DWORD[73];
+DWORD *dwTail = new DWORD[73];
 BOOL isToRewind = false;
+BOOL bFlg, isAllowed;
+LPSTR lpEven;
 
 /* Functions */
 /***********************************
 Initializer
 Initialize the parameters
 ***********************************/
-void initialize(HWND hWnd, int iThr, int iRel, int iMrk, short sNo, short sAd, unsigned ch, BOOL flg) {
+void initialize(HWND hWnd, int iThr, int iRel, int iMrk, unsigned ch, BOOL flg) {
 	iLev = (int)(MAXVALUE * powf(10.0F, (float)iThr / 20.0F));	// Threshold
 	iRelease = iRel;				// Latency in samples
 	iElapsed = iMrk;				// This can be initialized with 0
-	sFirNo = sNo;					// This can be initialized with 0
-	sAdv = sAd;						// This can be initialized with 0
 	Channels = ch;					// 1 for mono, 2 for stereo
 	isToRewind = flg;				// Initialize with FALSE
 }
 
-/**********************************
-Parameter updater
-**********************************/
-void firNoSetter(HWND hWnd, short sNo) {
-	sFirNo = sNo;
-}
-
 /************************************
 Generate a window function
-	sTap : The number of the FIR taps
 ************************************/
-void genFunc(HWND hWnd, short sTap) {
+BOOL genFunc(HWND hWnd) {
 	double dRA = PI / 2.0;
-	int iQ, iO, iCnt;
+	int iCnt;
+	short sAns = sNumTaps & (sNumTaps - 1);
 
-	iQ = sTap / 4;
-	iO = sTap / 8;
+	if (sAns != 0)
+		return(false);
+
+	iQ = sNumTaps / 4;
+	iO = sNumTaps / 8;
+	iE = sNumTaps - iO;
 	delete[] winFunc;
-	winFunc = new double[sTap];
+	winFunc = new double[sNumTaps];
 
-	for (iCnt = 0;iCnt < sTap;iCnt++) {
-		if (iCnt < iO || iCnt >= sTap - iO)
+	for (iCnt = 0;iCnt < sNumTaps;iCnt++) {
+		if (iCnt < iO || iCnt >= iE)
 			winFunc[iCnt] = 0;
 		else if (iCnt < iO * 3)
 			winFunc[iCnt] = sin(dRA * ((double)iCnt - (double)iO) / (double)iQ);
@@ -92,17 +98,17 @@ void genFunc(HWND hWnd, short sTap) {
 		else
 			winFunc[iCnt] = sin(PI * ((double)iCnt - ((double)iO * 3)) / ((double)iO * 4));
 	}
+	return(true);
 }
 
 /***************************************************************
 fast Fourier transform
-	real[] : Real part
-	image[] : Imaginary part
-	sTap : FFT window size
-	isInv : BOOL indicates FFT (false) or inverse FFT (true)
+real[] : Real part
+image[] : Imaginary part
+isInv : BOOL indicates FFT (false) or inverse FFT (true)
 ***************************************************************/
-static BOOL fastFt(HWND hwnd, double real[], double image[], short sTap, BOOL isInv) {
-	int n = sTap;
+static BOOL fastFt(HWND hwnd, double real[], double image[], BOOL isInv) {
+	int n = sNumTaps;
 	double sc, f, c, s, t, c1, s1, x1, kyo1;
 	int j, i, k, ns, l1, i0, i1;
 	int iInt;
@@ -182,141 +188,189 @@ static int gcd(HWND hwnd, int x, int y) {
 	return x;
 }
 
-/********************************************************************
-FIR filter generator
-	iParam : Pitch shift amount in semitone
-	sTap : The number of the FIR taps
-********************************************************************/
-void genFir(HWND hwnd, int iParam, short sTap) {
-	int i, f, perc, comdiv, iLen, iShift,iCutoff;
-	double dAmp, amp, phase, amount,ratio;
+/**********************************************************************
+Alocate memory for FIR filter
+sPitch : Pitch
+**********************************************************************/
+BOOL prepFir(HWND hwnd, short sPitch) {
+	DWORD dwLen;
+	int iSub;
+	int iHlf = sNumTaps / 2;
+	double ratio, div, dRate, dSub;
 
-	for (i = 0;i < sNumDown[iParam];i++) {
-		delete[] iDown[iParam][i];
-	}
-	for (i = 0;i < sNumUp[iParam];i++) {
-		delete[] iUp[iParam][i];
-	}
-
-	if (iParam == 0) {
-		iLen = 1;
-		iShift = 0;
-		iUp[iParam] = new int*[iLen];
-		iDown[iParam] = new int*[iLen];
-		for (i = 0;i < iLen;i++) {
-			iDown[iParam][i] = new int[sTap];
-			iUp[iParam][i] = new int[sTap];
-			for (f = 0;f < sTap;f++) {
-				if (f == 0 || f == sTap / 2)
-					iUp[iParam][i][f] = MAXVALUE;
-				else
-					iUp[iParam][i][f] = 0;
-				iDown[iParam][i][f] = 0;
-			}
-		}
-		sNumUp[iParam] = iLen;
-		sNumDown[iParam] = iLen;
-		sShiftUp[iParam] = iShift;
-		sShiftDown[iParam] = iShift;
+	if (sPitch == 0) {
+		iSub = 1;
 	}
 	else {
-		dAmp = (64.0 * 1024.0 - 1.0) / (double)sTap;
+		if (sPitch < 0) {
+			ratio = pow(semi, (double)sPitch);
+			div = 1.0 - ratio;
+		}
+		else {
+			ratio = pow(semi, (double)sPitch);
+			div = ratio - 1.0;
+		}
+		dRate = 1.0 / div;
+		dSub = (double)iHlf * dRate;
+		iSub = (int)round(dSub);
+	}
+	dwLen = (DWORD)sNumTaps * iSub;
+	if (lpEven) {
+		GlobalFreePtr(lpEven);
+		lpEven = NULL;
+	}
+	if (!malocfir(hwnd, &lpEven, dwLen * (DWORD)iBytes)) {
+		return(false);
+	}
+	dwPosit = 0;
+	return(true);
+}
 
-		double *re = new double[sTap];
-		double *im = new double[sTap];
+/**********************************************************************
+Alocate memory for FIR filter
+dwLen : Data length
+**********************************************************************/
+BOOL prepFir(HWND hwnd) {
+	DWORD dwLen;
 
-		ratio = pow(semi, (double)iParam);
-		amount = ratio - 1.0;
-		perc = (int)round(amount * 200.0);
-		comdiv = gcd(hwnd, 200, perc);
-		iLen = 200 / comdiv;
-		iShift = perc / comdiv;
+	if (sNumTaps == 512)
+		dwLen = 19755520;
+	else if (sNumTaps == 1024)
+		dwLen = 79029248;
+	else if (sNumTaps == 2048)
+		dwLen = 316102656;
+	else
+		dwLen = 1264472064;
 
-		iCutoff = (int)((double)sTap / (2.0 * ratio));
-		iUp[iParam] = new int*[iLen];
+	if (lpEven) {
+		GlobalFreePtr(lpEven);
+		lpEven = NULL;
+	}
+	if (!malocfir(hwnd, &lpEven, dwLen * (DWORD)iBytes)) {
+		return(false);
+	}
+	dwPosit = 0;
+	return(true);
+}
 
-		for (i = 0;i < iLen;i++) {
-			iUp[iParam][i] = new int[sTap];
-			for (f = 0;f <= sTap / 2;f++) {
-				if (f > iCutoff || f % 2 != 0)
+/********************************************************************
+FIR filter generator
+sPrm : Pitch shift amount in semitone
+********************************************************************/
+BOOL genFir(HWND hwnd, short sPrm) {
+	int i, f, iSub, iShift, iCutoff;
+	int iHlf = sNumTaps / 2;
+	short sParam;
+	short *lpFir = (short *)lpEven;
+	double dAmp, amp, phase, div, ratio, dRate, dSub;
+
+	if (sPrm < 0)
+		sParam = 36 - sPrm;
+	else
+		sParam = sPrm;
+
+	if (sParam == 0) {
+		dwHead[sParam] = dwPosit;
+		iSub = 1;
+
+		for (f = 0;f < sNumTaps;f++) {
+			if (f == 0 || f == sNumTaps / 2)
+				lpFir[dwPosit] = MAXVALUE;
+			else
+				lpFir[dwPosit] = 0;
+			dwPosit++;
+		}
+		dwTail[sParam] = dwPosit;
+	}
+	else {
+		dwHead[sParam] = dwPosit;
+		dAmp = (64.0 * 1024.0 - 1.0) / (double)sNumTaps;
+
+		double *re = new double[sNumTaps];
+		double *im = new double[sNumTaps];
+
+		if (sParam > 36) {
+			ratio = pow(semi, 36 - (double)sParam);
+			div = 1.0 - ratio;
+		}
+		else {
+			ratio = pow(semi, (double)sParam);
+			div = ratio - 1.0;
+		}
+
+		dRate = 1.0 / div;
+		dSub = (double)iHlf * dRate;
+		iSub = (int)round(dSub);
+		iShift = iHlf;
+
+		iCutoff = (int)((double)sNumTaps / (2.0 * ratio));
+
+		for (i = 0;i < iSub;i++) {
+			for (f = 0;f <= sNumTaps / 2;f++) {
+				if (sParam <= 36 && f > iCutoff)
+					amp = 0;
+				else if (f % 2 != 0)
 					amp = 0;
 				else
 					amp = dAmp;
-				phase = (double)f * (double)iShift * dWpi * (double)i / ((double)sTap * (double)iLen);
+				phase = (double)f * (double)iHlf * dWpi * (double)i / ((double)sNumTaps * (double)iSub);
 				re[f] = amp * cos(phase);
 				im[f] = amp * sin(phase);
-				if (f > 0 && f < sTap / 2) {
-					re[sTap - f] = amp * cos(-phase);
-					im[sTap - f] = amp * sin(-phase);
+				if (f > 0 && f < sNumTaps / 2) {
+					re[sNumTaps - f] = amp * cos(-phase);
+					im[sNumTaps - f] = amp * sin(-phase);
 				}
 			}
-			fastFt(hwnd, re, im, sTap, true);
-			for (f = 0;f < sTap;f++) {
-				iUp[iParam][i][f] = (int)re[f];
+			fastFt(hwnd, re, im, true);
+			for (f = 0;f < sNumTaps;f++) {
+				if (sParam <= 36)
+					lpFir[dwPosit] = (int)(re[f] * winFunc[f]);
+				else
+					lpFir[dwPosit] = (int)(re[sNumTaps - f - 1] * winFunc[sNumTaps - f - 1]);
+				dwPosit++;
 			}
 		}
-		sNumUp[iParam] = iLen;
-		sShiftUp[iParam] = iShift;
+		dwTail[sParam] = dwPosit;
+
+		/*
+		FILE* file;
+		if ((errno = fopen_s(&file, "example.txt", "w")) != 0) {
+		fprintf(stderr, "Error: cannot open \"%s\".\n", "example.txt");
+		exit(1);
+		}
+		for (i = 0;i < sNumTaps;i++)
+		fprintf(file, "%d\n", iUp[1][i]);
+		fclose(file);	*/
+
 		delete[] re;
 		delete[] im;
 
-		double *re1 = new double[sTap];
-		double *im1 = new double[sTap];
-		amount = 1.0 - pow(semi, (double)-iParam);
-		perc = (int)round(amount * 200.0);
-		comdiv = gcd(hwnd, 200, perc);
-		iLen = 200 / comdiv;
-		iShift = perc / comdiv;
-		iDown[iParam] = new int*[iLen];
-
-		for (i = 0;i < iLen;i++) {
-			iDown[iParam][i] = new int[sTap];
-			for (f = 0;f <= sTap / 2;f++) {
-				if (f % 2 == 0)
-					amp = dAmp;
-				else
-					amp = 0;
-				phase = (double)f * (double)iShift * dWpi * (double)i / ((double)sTap * (double)iLen);
-				re1[f] = amp * cos(phase);
-				im1[f] = amp * sin(phase);
-				if (f > 0 && f < sTap / 2) {
-					re1[sTap - f] = amp * cos(-phase);
-					im1[sTap - f] = amp * sin(-phase);
-				}
-			}
-			fastFt(hwnd, re1, im1, sTap, true);
-			for (f = 0;f < sTap;f++) {
-				iDown[iParam][i][sTap - f - 1] = (int)re1[f];
-			}
-		}
-		sNumDown[iParam] = iLen;
-		sShiftDown[iParam] = iShift;
-		delete[] re1;
-		delete[] im1;
 	}
+	return(true);
 }
 
 /********************************************************************
 Convolve the filter with the data
-	lpOrigi : Original data with which the filter is convolved
-	lpData : Data obtained by the processing
-	lpBuf : Buffer for the realtime reproduction
-	dwOffset : Current position in samples
-	dwUnt : Length of a single buffer in samples per channel
-	sCurrPitch : Pitch shift amount in semitone
-	sTap : The number of the FIR taps
+lpOrigi : Original data with which the filter is convolved
+lpData : Data obtained by the processing
+lpBuf : Buffer for the realtime reproduction
+dwOffset : Current position in samples
+dwUnt : Length of a single buffer in samples per channel
+sCurrPitch : Pitch shift amount in semitone
 
 This function returns the current position
 (total samples per channel processed)
 ********************************************************************/
-DWORD convolve(HWND hWnd, LPSTR lpOrigi, LPSTR lpData, LPSTR lpBuf, DWORD dwOffset, DWORD dwUnt, short sCurrPitch, short sTap) {
-	int c, iC, iD, iTmp;
-	short sNyq = sTap / 2;
+DWORD convolve(HWND hWnd, LPSTR lpOrigi, LPSTR lpData, LPSTR lpBuf, DWORD dwOffset, DWORD dwUnt, short sCurrPitch) {
+	int iC, iTmp;
+	short sNyq = sNumTaps / 2;
 	short *lpPri = (short *)lpOrigi;
 	short *lpRes = (short *)lpData;
+	short *lpFir = (short *)lpEven;
 	short *lpBuffer;
+	short sParam;
 	double dL, dR;
-	DWORD dwCurr;
+	DWORD dwCurr, dwK;
 	DWORD dwCnt = 0;
 	BOOL isRec = true;
 
@@ -327,84 +381,83 @@ DWORD convolve(HWND hWnd, LPSTR lpOrigi, LPSTR lpData, LPSTR lpBuf, DWORD dwOffs
 	else
 		lpBuffer = NULL;
 
+	if (sCurrPitch < 0)
+		sParam = 36 - sCurrPitch;
+	else
+		sParam = sCurrPitch;
+
+	if (bFlg) {
+		dwAdv = dwHead[sParam];
+		dwEnd = dwTail[sParam];
+
+		dwA = dwAdv + iO;
+		bFlg = false;
+	}
+
 	for (dwCurr = dwOffset;dwCurr < dwOffset + dwUnt;dwCurr++) {
-		for (c = 0;c < (int)Channels;c++) {
-			dL = dR = 0;
-			for (iTmp = 0;iTmp < (int)sTap;iTmp++) {
-				iD = (int)sAdv + iTmp;
-				if (iD >= (int)sTap)
-					iD -= (int)sTap;
-				else if (iD < 0)
-					iD += (int)sTap;
-
-				if ((int)dwCurr < iTmp)
-					iC = 0;
-				else
-					iC = (int)dwCurr - iTmp;
-
-				if (c == 0) {
-					if (sCurrPitch < 0)
-						dL += (double)lpPri[iC * Channels] * (double)iDown[-sCurrPitch][sFirNo][iD] * winFunc[iTmp];
-					else
-						dL += (double)lpPri[iC * Channels] * (double)iUp[sCurrPitch][sFirNo][iD] * winFunc[iTmp];
-				}
-				else {
-					if (sCurrPitch < 0)
-						dR += (double)lpPri[iC * Channels + c] * (double)iDown[-sCurrPitch][sFirNo][iD] * winFunc[iTmp];
-					else
-						dR += (double)lpPri[iC * Channels + c] * (double)iUp[sCurrPitch][sFirNo][iD] * winFunc[iTmp];
-				}
-			}
-			if (c == 0) {
-				dL /= MAXVALUE;
-				if (isRec)
-					lpRes[dwCurr * Channels] = (short)dL;
-				else
-					lpBuffer[dwCnt] = lpRes[dwCurr * Channels] = (short)dL;
-			}
+		dL = dR = 0;
+		for (iTmp = iO;iTmp < iE;iTmp++) {
+			if ((int)dwCurr < iTmp)
+				iC = 0;
 			else {
+				iC = (int)dwCurr - iTmp;
+				iC *= Channels;
+			}
+			dL += (double)lpPri[iC] * (double)lpFir[dwA];
+			if (Channels == 2)
+				dR += (double)lpPri[iC + 1] * (double)lpFir[dwA];
+			dwA++;
+		}
+		dwA += iQ;
+		if (dwA >= dwEnd) {
+			dwA = dwAdv + iO;
+		}
+
+		dwK = dwCurr * Channels;
+		dL /= MAXVALUE;
+		if (isRec) {
+			lpRes[dwK] = (short)dL;
+			if (Channels == 2) {
 				dR /= MAXVALUE;
-				if (isRec)
-					lpRes[dwCurr * Channels + c] = (short)dR;
-				else
-					lpBuffer[dwCnt] = lpRes[dwCurr * Channels + c] = (short)dR;
+				lpRes[dwK + 1] = (short)dR;
 			}
+		}
+		else {
+			lpBuffer[dwCnt] = lpRes[dwK] = (short)dL;
 			dwCnt++;
-			if (c == Channels - 1) {
-				if (sCurrPitch != 0)
-					sFirNo++;
-				if (sCurrPitch > 0) {
-					if (sFirNo >= sNumUp[sCurrPitch]) {
-						sAdv += sShiftUp[sCurrPitch];
-						if (sAdv >= sNyq)
-							sAdv -= sNyq;
-						sFirNo = 0;
-					}
-				}
-				else if (sCurrPitch < 0) {
-					if (sFirNo >= sNumDown[-sCurrPitch]) {
-						sAdv -= sShiftDown[-sCurrPitch];
-						if (sAdv <= -sNyq)
-							sAdv += sNyq;
-						sFirNo = 0;
-					}
-				}
-				if (lpPri[dwCurr * Channels] < iLev && lpPri[dwCurr * Channels + 1] < iLev) {
-					iElapsed++;
-					if (iElapsed > iRelease)
-						isToRewind = true;
-				}
-				else {
-					if (isToRewind) {
-						sAdv = 0;
-						isToRewind = false;
-					}
-					iElapsed = 0;
-				}
+			if (Channels == 2) {
+				dR /= MAXVALUE;
+				lpBuffer[dwCnt] = lpRes[dwK + 1] = (short)dR;
+				dwCnt++;
 			}
+		}
+
+		if (lpPri[dwK] < iLev && lpPri[dwK + 1] < iLev) {
+			iElapsed++;
+			if (iElapsed > iRelease)
+				isToRewind = true;
+		}
+		else {
+			if (isToRewind) {
+				dwAdv = dwHead[sParam];
+				dwEnd = dwTail[sParam];
+				dwA = dwAdv + iO;
+				isToRewind = false;
+			}
+			iElapsed = 0;
 		}
 	}
 	return(dwCurr);
+}
+
+BOOL malocfir(HWND hWnd, LPSTR *lpFilter, DWORD dwSize) {
+
+	LPSTR lpData = (LPSTR)GlobalAllocPtr(GMEM_MOVEABLE, dwSize);
+	if (!lpData) {
+		return(FALSE);
+	}
+	*lpFilter = lpData;
+	return(TRUE);
 }
 
 /********************************************************************
@@ -413,14 +466,7 @@ Delete the FIR filter arrays
 Delete the window function
 ********************************************************************/
 void finalize(HWND hWnd) {
-	int iCnt, i;
-	for (iCnt = 0;iCnt < 37;iCnt++) {
-		for (i = 0;i < sNumDown[iCnt];i++) {
-			delete[] iDown[iCnt][i];
-		}
-		for (i = 0;i < sNumUp[iCnt];i++) {
-			delete[] iUp[iCnt][i];
-		}
-	}
+	if (lpEven)
+		GlobalFreePtr(lpEven);
 	delete[] winFunc;
 }
