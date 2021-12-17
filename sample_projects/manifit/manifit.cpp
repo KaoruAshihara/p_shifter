@@ -8,14 +8,14 @@
 #include "resource.h"
 #include "p_shifter.h"
 
-#define BUFSIZE 4096
-#define MAX_RSRC_STRING_LEN 80
+#define BUFSIZE 8192
 
 /*********************************
 PROTOTYPE Definition
 *********************************/
 int WINAPI WinMain(HINSTANCE hinstThis, HINSTANCE hinstPrev, LPSTR lpszCmdLine, int iCmdShow);
 static void FreeGlobalWaveData(void);
+static BOOL prepare(HWND hWnd);
 static BOOL GetFileName(HWND hDlg, BOOL bOpenName, LPSTR lpszFile,int iMaxFileNmLen, LPSTR lpszFileTitle, int iMaxFileTitleLen);
 static BOOL OpenWaveFile(HWND hDlg);
 BOOL ReadWaveData(HWND hWnd, LPSTR lpszFileName, LPSTR *lplpWaveData,DWORD *lpdwWaveDataSize, DWORD *lpdwSmpl);
@@ -38,7 +38,7 @@ static char szFileTitle[_MAX_FNAME];
 static char szmanifitClass[] = "manifitClass";
 LPSTR lpOriginal;
 LPSTR lpWaveData;
-static DWORD dwSPC;
+static DWORD dwSPC;				// Samples per channel
 DWORD dwWaveDataSize;        // size of .WAV file data 
 DWORD dwNewSize;
 DWORD dwSrate;
@@ -52,12 +52,11 @@ static int iBufNo;
 static int iLat,iThr;
 static int iRelease;
 static int iMark;
-static short sAdv;
-static short sFirNo;
-short sTaps,sPitch;
+short sPitch;
 static BOOL isPlaying;
 static BOOL isToStop = FALSE;
 static BOOL isToRew = FALSE;
+static BOOL isMsgOn = false;
 
 /*********************************
 Dialogue Procedures
@@ -135,12 +134,13 @@ LRESULT WINAPI manifit_WndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam
 	HWND hwndCombo = GetDlgItem(hDlg, IDC_COMBO_TAPS);
 	HMENU hMenu = GetMenu(hDlg);
 	RECT rc;
-	int iCnt,iSel;
+	static DWORD dwCount;
+	int iCnt,iSel,i;
 	int iX, iY;
 	char charry[255];
 	std::string str;
 	std::vector<std::string> strTaps =
-	{ "256","512","1024","2048","4096" };
+	{ "256","512","1024","2048","4096"," " };
 
 	switch (msg) {
 	case WM_INITDIALOG:
@@ -156,8 +156,8 @@ LRESULT WINAPI manifit_WndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam
 		SendMessage(hwndCombo, CB_RESETCONTENT, 0, 0L);
 		for (iCnt = 0;iCnt < (int)strTaps.size();iCnt++)
 			SendMessage(hwndCombo, CB_ADDSTRING, 0, (LPARAM)strTaps[iCnt].c_str());
-		SendMessage(hwndCombo, CB_SETCURSEL, 2, (LPARAM)0);
-		sTaps = (short)std::stoi(strTaps[2]);
+		SendMessage(hwndCombo, CB_SETCURSEL, 5, (LPARAM)0);
+		sNumTaps = 0;
 
 		SendMessage(GetDlgItem(hDlg, IDC_SPIN), UDM_SETRANGE, (WPARAM)0, (LPARAM)MAKELONG(36, -36));
 		sPitch = 0;
@@ -165,8 +165,10 @@ LRESULT WINAPI manifit_WndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam
 
 		iThr = -40;
 		iLat = 1000;
+		isAllowed = true;
 
 		iRelease = (int)((float)dwSrate * (float)iLat / 1000.0F);
+		Static_SetText(GetDlgItem(hDlg, IDC_MSG), "Open WAV file");
 
 		return 0;
 
@@ -181,16 +183,17 @@ LRESULT WINAPI manifit_WndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam
 		case ID_MENU_OPEN:
 			if (!OpenWaveFile(hDlg))
 				break;
+			iRelease = (int)((float)dwSrate * (float)iLat / 1000.0F);
 			dwBlock = channels * (BitPerSample / 8);
 			dwSPC = dwWaveDataSize / dwBlock;
 			str = std::to_string(dwSPC);
-			str += " samples loaded";
+			str += " samples loaded. Select filter tap size";
 			strcpy_s(charry, sizeof(charry), str.c_str());
 			Static_SetText(GetDlgItem(hDlg, IDC_MSG), (LPSTR)charry);
 
 			dwNewSize = 0;
+			EnableWindow(GetDlgItem(hDlg, IDC_COMBO_TAPS), true);
 			EnableMenuItem(hMenu, ID_FILE_SAVE, MF_GRAYED | MF_BYCOMMAND);
-			EnableWindow(GetDlgItem(hDlg, IDB_SET), true);
 			break;
 
 		case ID_FILE_SAVE:
@@ -218,35 +221,95 @@ LRESULT WINAPI manifit_WndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam
 			break;
 
 		case IDC_COMBO_TAPS:
-			EnableWindow(GetDlgItem(hDlg, IDB_REC), false);
+			Static_SetText(GetDlgItem(hDlg, IDC_PERCENT), "");
+			Static_SetText(GetDlgItem(hDlg, IDC_PROGRESS), "");
+			if (isMsgOn)
+				return(0);
+			iSel = (WORD)SendMessage(hwndCombo, CB_GETCURSEL, 0, 0L);
+			if (iSel == 5)
+				break;
 
+			if (iSel == 4 && isAllowed && sNumTaps != 4096) {
+				isMsgOn = true;
+				i = MessageBox(hDlg, TEXT("2.529 GiB memory required!"), TEXT("Attention!"), MB_OKCANCEL | MB_ICONWARNING);
+				if (i != IDOK) {
+					if (sNumTaps == 256)
+						iCnt = 0;
+					else if (sNumTaps == 512)
+						iCnt = 1;
+					else if (sNumTaps == 1024)
+						iCnt = 2;
+					else if (sNumTaps == 2048)
+						iCnt = 3;
+					else if (sNumTaps == 4096)
+						iCnt = 4;
+					else
+						iCnt = 5;
+
+					isMsgOn = false;
+					SendMessage(hwndCombo, CB_SETCURSEL, iCnt, (LPARAM)0);
+				}
+				else {
+					isMsgOn = false;
+					Static_SetText(GetDlgItem(hDlg, IDC_MSG), "Preparing filter. Just a moment, please");
+					sNumTaps = 4096;
+					EnableWindow(GetDlgItem(hDlg, IDB_EXE), false);
+					/* Prepare the window function */
+					genFunc(hDlg);
+					/* Generate FIR */
+					if (prepare(hDlg)) {
+						Static_SetText(GetDlgItem(hDlg, IDC_MSG), "I am ready!");
+						EnableWindow(GetDlgItem(hDlg, IDB_EXE), true);
+					}
+				}
+			}
+			else {
+				isMsgOn = false;
+				dwCount = (DWORD)std::stoi(strTaps[iSel]);
+				if (dwCount != sNumTaps) {
+					Static_SetText(GetDlgItem(hDlg, IDC_MSG), "Preparing filter. Just a moment, please");
+					sNumTaps = (short)dwCount;
+					EnableWindow(GetDlgItem(hDlg, IDB_EXE), false);
+					/* Prepare the window function */
+					genFunc(hDlg);
+					/* Generate FIR */
+					if (prepare(hDlg)) {
+						Static_SetText(GetDlgItem(hDlg, IDC_MSG), "I am ready!");
+						EnableWindow(GetDlgItem(hDlg, IDB_EXE), true);
+					}
+				}
+			}
 			break;
 
 		case IDC_EDIT_PITCH:
-			sPitch = GetDlgItemInt(hDlg, IDC_EDIT_PITCH, false, true);
-			sFirNo = 0;
-			firNoSetter(hDlg, sFirNo);
+			if (!isAllowed && sNumTaps == 0) {
+				sPitch = GetDlgItemInt(hDlg, IDC_EDIT_PITCH, false, true);
+				Static_SetText(GetDlgItem(hDlg, IDC_MSG), "Please select FIR tap number, first!");
+			}
+			else if (GetDlgItemInt(hDlg, IDC_EDIT_PITCH, false, true) != sPitch) {
+				sPitch = GetDlgItemInt(hDlg, IDC_EDIT_PITCH, false, true);
+				bFlg = true;
+				if (!isAllowed) {
+					EnableWindow(GetDlgItem(hDlg, IDB_EXE), false);
+					Static_SetText(GetDlgItem(hDlg, IDC_MSG), "Preparing filter. Just a moment, please");
+					if (prepare(hDlg)) {
+						Static_SetText(GetDlgItem(hDlg, IDC_MSG), "I am ready!");
+						EnableWindow(GetDlgItem(hDlg, IDB_EXE), true);
+					}
+				}
+			}
 			break;
 
-		case IDB_SET:
-			EnableWindow(GetDlgItem(hDlg, IDB_REC), false);
-			iRelease = (int)((float)dwSrate * (float)iLat / 1000.0F);
-
-			iSel = (WORD)SendMessage(hwndCombo, CB_GETCURSEL, 0, 0L);
-			sTaps = (short)std::stoi(strTaps[iSel]);
-
-			genFunc(hDlg, sTaps);
-
-			/* Generate FIR */
-			for (iCnt = 0;iCnt < 37;iCnt++) {
-				genFir(hDlg, iCnt,sTaps);
+		case IDC_CHECK:
+			if (isAllowed) {
+				isAllowed = FALSE;
 			}
-			str = std::to_string(sTaps);
-			str += " taps";
-			strcpy_s(charry, sizeof(charry), str.c_str());
-			Static_SetText(GetDlgItem(hDlg, IDC_MSG), (LPSTR)charry);
-			Static_SetText(GetDlgItem(hDlg, IDB_EXE), "EXECUTE");
-			EnableWindow(GetDlgItem(hDlg, IDB_EXE), true);
+			else
+				isAllowed = TRUE;
+			EnableWindow(GetDlgItem(hDlg, IDB_EXE), false);
+			sNumTaps = 0;
+			SendMessage(hwndCombo, CB_SETCURSEL, 5, (LPARAM)0);
+			Static_SetText(GetDlgItem(hDlg, IDC_MSG), "Select FIR tap number!");
 			break;
 
 		case IDB_EXE:
@@ -256,20 +319,20 @@ LRESULT WINAPI manifit_WndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam
 			}
 			else {
 				EnableWindow(GetDlgItem(hDlg, IDB_EXE), false);
-				EnableWindow(GetDlgItem(hDlg, IDB_SET), false);
+				EnableWindow(GetDlgItem(hDlg, IDC_CHECK), false);
 				EnableWindow(GetDlgItem(hDlg, IDC_COMBO_TAPS), false);
+				if (!isAllowed)
+					EnableWindow(GetDlgItem(hDlg, IDC_EDIT_PITCH), false);
 				dwPos = 0;
 				dwUnit = BUFSIZE / dwBlock;
 
-				sPitch = GetDlgItemInt(hDlg, IDC_EDIT_PITCH, false, true);
-				sFirNo = 0;
-				sAdv = 0;
 				iMark = 0;
 				isToStop = false;
 				isToRew = false;
+				bFlg = true;
 				iBufNo = 0;
 
-				initialize(hDlg, iThr, iRelease, iMark,sFirNo,sAdv,channels,isToRew);
+				initialize(hDlg, iThr, iRelease, iMark, channels,isToRew);
 
 				if (lpWaveData) {
 					GlobalFreePtr(lpWaveData);
@@ -280,9 +343,9 @@ LRESULT WINAPI manifit_WndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam
 				byteBuf[0] = (LPSTR)malloc(BUFSIZE);
 				byteBuf[1] = (LPSTR)malloc(BUFSIZE);
 
-				dwProc = convolve(hDlg, lpOriginal, lpWaveData, byteBuf[0], dwPos, dwUnit, sPitch, sTaps);
+				dwProc = convolve(hDlg, lpOriginal, lpWaveData, byteBuf[0], dwPos, dwUnit, sPitch);
 				dwPos += dwUnit;
-				dwProc = convolve(hDlg, lpOriginal, lpWaveData, byteBuf[1], dwPos, dwUnit, sPitch, sTaps);
+				dwProc = convolve(hDlg, lpOriginal, lpWaveData, byteBuf[1], dwPos, dwUnit, sPitch);
 				dwPos += dwUnit;
 				dwNewSize = dwProc * dwBlock;
 
@@ -350,7 +413,7 @@ LRESULT WINAPI manifit_WndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam
 		}
 		else {
 			if (iBufNo == 0) {
-				dwProc = convolve(hDlg, lpOriginal, lpWaveData, byteBuf[0], dwPos, dwUnit, sPitch, sTaps);
+				dwProc = convolve(hDlg, lpOriginal, lpWaveData, byteBuf[0], dwPos, dwUnit, sPitch);
 				dwPos += dwUnit;
 				dwNewSize = dwProc * dwBlock;
 				iBufNo++;
@@ -360,7 +423,7 @@ LRESULT WINAPI manifit_WndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam
 				}
 			}
 			else {
-				dwProc = convolve(hDlg, lpOriginal, lpWaveData, byteBuf[1], dwPos, dwUnit, sPitch, sTaps);
+				dwProc = convolve(hDlg, lpOriginal, lpWaveData, byteBuf[1], dwPos, dwUnit, sPitch);
 				dwPos += dwUnit;
 				dwNewSize = dwProc * dwBlock;
 				iBufNo = 0;
@@ -376,7 +439,7 @@ LRESULT WINAPI manifit_WndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam
 
 	case MM_WOM_CLOSE:
 		waveOutUnprepareHeader(hOut, &whdr, sizeof(WAVEHDR));
-		EnableWindow(GetDlgItem(hDlg, IDB_SET), true);
+		EnableWindow(GetDlgItem(hDlg, IDC_CHECK), true);
 		EnableWindow(GetDlgItem(hDlg, IDC_COMBO_TAPS), true);
 		EnableWindow(GetDlgItem(hDlg, IDC_EDIT_PITCH), true);
 		EnableWindow(GetDlgItem(hDlg, IDC_SPIN), true);
@@ -408,6 +471,60 @@ static void FreeGlobalWaveData(void) {
 
 	free(byteBuf[0]);
 	free(byteBuf[1]);
+}
+
+static BOOL prepare(HWND hDlg) {
+	HWND hwndCombo = GetDlgItem(hDlg, IDC_COMBO_TAPS);
+	std::string str;
+	char charry[80];
+	int iCnt, iPer;
+	double dPer;
+	BOOL isE = false;
+
+	/* Generate FIR */
+	if (isAllowed) {
+		if (!prepFir(hDlg)) {
+			Static_SetText(GetDlgItem(hDlg, IDC_MSG), "Memory error!");
+			isE = true;
+		}
+		else {
+			Static_SetText(GetDlgItem(hDlg, IDC_PERCENT), "% done");
+			for (iCnt = 0;iCnt <= 72;iCnt++) {
+				if (!genFir(hDlg, iCnt)) {
+					Static_SetText(GetDlgItem(hDlg, IDC_MSG), "Error detected!");
+					iCnt = 73;
+					isE = true;
+				}
+				dPer = (double)iCnt * 100.0 / 72.0;
+				iPer = (int)dPer;
+				str = std::to_string(iPer);
+				strcpy_s(charry, sizeof(charry), str.c_str());
+				Static_SetText(GetDlgItem(hDlg, IDC_PROGRESS), (LPSTR)charry);
+			}
+		}
+	}
+	else {
+		if (!prepFir(hDlg, sPitch)) {
+			Static_SetText(GetDlgItem(hDlg, IDC_MSG), "Memory error!");
+			isE = true;
+		}
+		else {
+			if (sPitch < 0)
+				iCnt = 36 - sPitch;
+			else
+				iCnt = sPitch;
+			if (!genFir(hDlg, iCnt)) {
+				Static_SetText(GetDlgItem(hDlg, IDC_MSG), "Error detected!");
+				isE = true;
+			}
+		}
+	}
+	if (isE) {
+		SendMessage(hwndCombo, CB_SETCURSEL, 5, (LPARAM)0);
+		return(false);
+	}
+	return(true);
+
 }
 
 static BOOL GetFileName(HWND hDlg,
