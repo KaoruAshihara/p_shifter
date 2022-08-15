@@ -1,9 +1,9 @@
 /*********************************************************************
 //	p_shifter.cpp
-//	version 1.0.4
-//	13 December, 2021
+//	version 1.0.6
+//	14 July, 2022
 //	Programmed by Kaoru Ashihara
-//	Copyright (c) 2021 AIST
+//	Copyright (c) 2022 AIST
 //
 //	Released under the MIT license
 //	MIT license -> https://opensource.org/licenses/mit-license.php
@@ -432,7 +432,7 @@ DWORD convolve(HWND hWnd, LPSTR lpOrigi, LPSTR lpData, LPSTR lpBuf, DWORD dwOffs
 			}
 		}
 
-		if (lpPri[dwK] < iLev && lpPri[dwK + 1] < iLev) {
+		if (abs(lpPri[dwK]) < iLev && abs(lpPri[dwK + 1]) < iLev) {
 			iElapsed++;
 			if (iElapsed > iRelease)
 				isToRewind = true;
