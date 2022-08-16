@@ -1,9 +1,9 @@
 /***********************************************
 //	manipit.cpp
-//	version 1.0.4
-//	1 December, 2021
+//	version 1.0.6
+//	17 August, 2022
 //	Programmed by Kaoru Ashihara
-//	Copyright (c) 2021 AIST
+//	Copyright (c) 2022 AIST
 ***********************************************/
 #include <windows.h>
 #include <windowsx.h>
